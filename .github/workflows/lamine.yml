@@ -47,8 +47,18 @@ jobs:
           fi
 
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2_key
+          printf '%s\n' "$EC2_SSH_KEY" | tr -d '\r' > ~/.ssh/ec2_key
           chmod 600 ~/.ssh/ec2_key
+
+          if ! grep -q "PRIVATE KEY" ~/.ssh/ec2_key; then
+            echo "::error::EC2_SSH_KEY must contain the private key, including the BEGIN/END PRIVATE KEY lines. Do not use the .pub file."
+            exit 1
+          fi
+
+          if ! ssh-keygen -y -f ~/.ssh/ec2_key >/dev/null; then
+            echo "::error::EC2_SSH_KEY is not a valid private key. Recreate the repository secret by pasting the full contents of your .pem private key."
+            exit 1
+          fi
 
       - name: Wait for SSH service
         run: |
