@@ -50,23 +50,45 @@ jobs:
           printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2_key
           chmod 600 ~/.ssh/ec2_key
 
-      - name: Check SSH port
+      - name: Wait for SSH service
         run: |
           set -Eeuo pipefail
 
-          if ! timeout 20s bash -c "echo >/dev/tcp/$EC2_HOST/22"; then
-            echo "::error::Cannot reach $EC2_HOST:22. Check that the EC2 instance is running, the public IP is correct, and the security group allows inbound TCP 22 from GitHub-hosted runners."
-            exit 1
-          fi
+          for attempt in {1..12}; do
+            if timeout 10s bash -c '
+              exec 3<>"/dev/tcp/'"$EC2_HOST"'/22"
+              IFS= read -r -t 5 banner <&3
+              [[ "$banner" == SSH-* ]]
+            '; then
+              echo "SSH service is ready on $EC2_HOST:22"
+              exit 0
+            fi
+
+            echo "Waiting for SSH service on $EC2_HOST:22 ($attempt/12)..."
+            sleep 10
+          done
+
+          echo "::error::Port 22 is reachable, but the SSH service did not send a banner. Restart sshd on the EC2 instance and confirm the security group allows inbound TCP 22 from GitHub Actions runners."
+          exit 1
 
       - name: Test SSH connection
         run: |
           set -Eeuo pipefail
 
-          SSH_OPTS="-i ~/.ssh/ec2_key -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2"
+          SSH_OPTS="-i ~/.ssh/ec2_key -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=2"
 
-          timeout 45s ssh $SSH_OPTS "$EC2_USER@$EC2_HOST" \
-            'echo "SSH ok"; hostname; date'
+          for attempt in {1..5}; do
+            if timeout 90s ssh $SSH_OPTS "$EC2_USER@$EC2_HOST" \
+              'echo "SSH ok"; hostname; date'; then
+              exit 0
+            fi
+
+            echo "SSH connection failed ($attempt/5). Retrying..."
+            sleep 10
+          done
+
+          echo "::error::Unable to complete SSH login. Check EC2_SSH_KEY, EC2_USER, sshd status, and the EC2 security group."
+          exit 1
 
       - name: Detect EC2 dependencies
         id: dependencies
